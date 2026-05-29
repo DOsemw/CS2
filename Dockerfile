@@ -28,4 +28,5 @@ RUN mkdir -p data models
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# NEW
+CMD ["sh", "-c", "python data_ingestion.py --start 2023-01-01 --max-matches 2000 && python model.py && uvicorn main:app --host 0.0.0.0 --port 8000"]
