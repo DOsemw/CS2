@@ -65,7 +65,10 @@ def load_everything():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    load_everything()
+    try:
+        load_everything()
+    except FileNotFoundError as e:
+        log.warning(f"[startup] No data found — starting in EMPTY mode. Run the scraper first.\n{e}")
     yield
 
 
