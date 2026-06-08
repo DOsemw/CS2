@@ -1,0 +1,10 @@
+{
+  "target": "deaths",
+  "n_test": 50,
+  "mae": 0.3281,
+  "rmse": 0.9341,
+  "within_0.5": 0.92,
+  "within_1.0": 0.92,
+  "mean_actual": 22.5282,
+  "mean_pred": 22.4113
+}
