@@ -3,7 +3,7 @@ model.py
 --------
 Trains and evaluates LightGBM regression models for CS2 player stats.
 
-Targets: kills, deaths, hs_pct
+Targets: kills, deaths,
 
 Uses random 70/15/15 split since data is aggregate (one row per player),
 not time-series like the LoL model.
@@ -21,7 +21,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 warnings.filterwarnings("ignore")
 
-TARGETS = ["kills", "deaths", "hs_pct"]
+TARGETS = ["kills", "deaths"]
 MODEL_DIR = Path(__file__).parent / "models"
 MODEL_DIR.mkdir(exist_ok=True)
 
