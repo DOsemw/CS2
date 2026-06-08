@@ -1,7 +1,7 @@
 /**
  * scraper.js
  * ----------
- * Fetches CS2 pro match player stats from HLTV using the hltv npm package.
+ * Fetches CS2 pro match player stats from HLTV.
  * Outputs data/hltv_raw.csv in the same schema the Python model expects.
  *
  * Usage:
@@ -25,6 +25,7 @@ const getArg = (name, def) => {
 const MAX_MATCHES = parseInt(getArg("--matches", "500"));
 const START_DATE  = new Date(getArg("--start", "2024-01-01"));
 const OUT_FILE    = path.join(__dirname, "data", "hltv_raw.csv");
+const DELAY_MS    = 8000; // delay between page requests to avoid Cloudflare
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ function toCSVRow(obj) {
 // ── Resume support ────────────────────────────────────────────────────────────
 
 function loadDone() {
-  if (!fs.existsSync(OUT_FILE)) return new Set();
+  if (!fs.existsSync(OUT_FILE) || fs.statSync(OUT_FILE).size < 10) return new Set();
   const lines = fs.readFileSync(OUT_FILE, "utf8").trim().split("\n");
   const done = new Set();
   for (const line of lines.slice(1)) {
@@ -65,11 +66,11 @@ function loadDone() {
 
 async function main() {
   console.log(`[hltv] Fetching up to ${MAX_MATCHES} matches since ${START_DATE.toISOString().slice(0, 10)}`);
+  console.log(`[hltv] Using ${DELAY_MS}ms delay between requests to avoid Cloudflare`);
 
   const doneIds = loadDone();
   console.log(`[resume] ${doneIds.size} matches already in CSV`);
 
-  // Write header if file doesn't exist
   const fileExists = fs.existsSync(OUT_FILE) && fs.statSync(OUT_FILE).size > 10;
   const outStream = fs.createWriteStream(OUT_FILE, { flags: fileExists ? "a" : "w" });
   if (!fileExists) {
@@ -81,7 +82,7 @@ async function main() {
   const PER_PAGE = 100;
 
   while (fetched < MAX_MATCHES) {
-    console.log(`[matches] Fetching page offset=${offset}...`);
+    console.log(`\n[matches] Fetching page offset=${offset}...`);
 
     let results;
     try {
@@ -89,42 +90,46 @@ async function main() {
         startDate: START_DATE.toISOString().slice(0, 10),
         count: PER_PAGE,
         offset,
+        delayBetweenPageRequests: DELAY_MS,
       });
     } catch (e) {
-      console.warn(`[matches] Error fetching results: ${e.message} — retrying in 15s`);
-      await sleep(15000);
+      console.warn(`[matches] Error: ${e.message} — waiting 30s then retrying...`);
+      await sleep(30000);
       continue;
     }
 
     if (!results || results.length === 0) {
-      console.log("[matches] No more results.");
+      console.log("[matches] No more results — done.");
       break;
     }
+
+    console.log(`[matches] Got ${results.length} matches`);
 
     for (const result of results) {
       if (fetched >= MAX_MATCHES) break;
 
       const matchId = String(result.id);
-      if (doneIds.has(matchId)) continue;
+      if (doneIds.has(matchId)) {
+        console.log(`[skip] ${matchId} already done`);
+        continue;
+      }
 
-      // Filter by date
       const matchDate = result.date ? new Date(result.date) : null;
       if (matchDate && matchDate < START_DATE) continue;
 
-      const team1 = result.team1?.name || "";
-      const team2 = result.team2?.name || "";
+      const team1   = result.team1?.name || "";
+      const team2   = result.team2?.name || "";
       const dateStr = matchDate ? matchDate.toISOString().slice(0, 10) : "";
 
-      console.log(`[match] ${fetched + 1}/${MAX_MATCHES}: ${team1} vs ${team2} (${matchId})`);
+      console.log(`[match] ${fetched + 1}/${MAX_MATCHES}: ${team1} vs ${team2} (id: ${matchId})`);
 
       // Fetch full match details
       let match;
       try {
         match = await HLTV.getMatch({ id: parseInt(matchId) });
-        await sleep(2000 + Math.random() * 2000);
       } catch (e) {
-        console.warn(`[match] Failed to fetch match ${matchId}: ${e.message}`);
-        await sleep(5000);
+        console.warn(`[match] Failed ${matchId}: ${e.message} — skipping`);
+        await sleep(10000);
         continue;
       }
 
@@ -134,46 +139,34 @@ async function main() {
       for (let mapIdx = 0; mapIdx < maps.length; mapIdx++) {
         const mapData = maps[mapIdx];
         const mapName = mapData.name || `map${mapIdx + 1}`;
+        if (!mapData.statsId) continue;
 
-        if (!mapData.statsId && !mapData.result) continue;
-
-        // Map result
         const scoreTeam1 = mapData.result?.team1 ?? NaN;
         const scoreTeam2 = mapData.result?.team2 ?? NaN;
         const team1Won   = scoreTeam1 > scoreTeam2;
 
-        // Fetch map stats
-        let mapStats = null;
-        if (mapData.statsId) {
-          try {
-            mapStats = await HLTV.getMatchMapStats({ id: mapData.statsId });
-            await sleep(1500 + Math.random() * 1500);
-          } catch (e) {
-            console.warn(`[mapstats] Failed for statsId ${mapData.statsId}: ${e.message}`);
-          }
+        // Fetch per-player map stats
+        let mapStats;
+        try {
+          mapStats = await HLTV.getMatchMapStats({ id: mapData.statsId });
+          await sleep(DELAY_MS);
+        } catch (e) {
+          console.warn(`[mapstats] Failed statsId ${mapData.statsId}: ${e.message}`);
+          await sleep(10000);
+          continue;
         }
 
         const playerStats = mapStats?.playerStats || [];
-
-        if (playerStats.length === 0) {
-          // No per-player stats available for this map
-          continue;
-        }
+        if (playerStats.length === 0) continue;
 
         for (const ps of playerStats) {
           const playerName = ps.player?.name || ps.playerName || "";
           if (!playerName) continue;
 
-          const isTeam1 = ps.team === 1 || ps.teamId === match.team1?.id;
+          const isTeam1 = ps.team === 1;
           const teamName = isTeam1 ? team1 : team2;
           const oppName  = isTeam1 ? team2 : team1;
           const won      = isTeam1 ? (team1Won ? 1 : 0) : (team1Won ? 0 : 1);
-
-          const kills  = ps.kills  ?? ps.K  ?? "";
-          const deaths = ps.deaths ?? ps.D  ?? "";
-          const hsPct  = ps.hsPercent !== undefined ? ps.hsPercent : (ps.hs ?? "");
-          const adr    = ps.adr    ?? ps.ADR ?? "";
-          const rating = ps.rating ?? ps.rating2 ?? "";
 
           outStream.write(toCSVRow({
             match_id:       matchId,
@@ -185,30 +178,32 @@ async function main() {
             opponent:       oppName,
             result:         won,
             playername:     playerName,
-            kills:          kills,
-            deaths:         deaths,
-            hs_pct:         hsPct,
-            adr:            adr,
-            rating:         rating,
+            kills:          ps.kills  ?? "",
+            deaths:         ps.deaths ?? "",
+            hs_pct:         ps.hsPercent ?? "",
+            adr:            ps.adr    ?? "",
+            rating:         ps.rating ?? "",
             map_score_team: isTeam1 ? scoreTeam1 : scoreTeam2,
             map_score_opp:  isTeam1 ? scoreTeam2 : scoreTeam1,
           }) + "\n");
         }
+
+        console.log(`  [map] ${mapName} — ${playerStats.length} players scraped`);
       }
 
       doneIds.add(matchId);
       fetched++;
 
-      // Polite delay between matches
-      await sleep(3000 + Math.random() * 3000);
+      // Delay between matches
+      await sleep(DELAY_MS + Math.random() * 3000);
     }
 
     offset += PER_PAGE;
-    await sleep(5000);
+    await sleep(DELAY_MS);
   }
 
   outStream.end();
-  console.log(`\n[done] Finished. ${fetched} matches processed → ${OUT_FILE}`);
+  console.log(`\n[done] ${fetched} matches processed → ${OUT_FILE}`);
 }
 
 main().catch((e) => {
